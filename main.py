@@ -1,5 +1,5 @@
 import math
-from prettytable import PrettyTable 
+from prettytable import PrettyTable  # type: ignore
 
 poczki = open("poczki.txt", "r")
 trenerzy = poczki.readline().split(",")
