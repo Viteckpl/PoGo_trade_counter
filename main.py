@@ -25,7 +25,6 @@ for x in poczki:
     wym_31 = math.floor((suma/2 - tr_2))
     if suma%2==0:
         wym_12 = math.floor((suma/2 - tr_3))
-        
     if suma%2==1:
         wym_12 = math.ceil((suma/2 - tr_3))        
         
