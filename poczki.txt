@@ -1,3 +1,2 @@
-Viteck,Kiełbas,Nomad
-Unown A,10,15,19
-Umbreon,8,10,13
+Viteck,Kielbas,Nomad
+Total,831,550,863
