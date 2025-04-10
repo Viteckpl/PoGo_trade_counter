@@ -1,9 +1,7 @@
-Viteck,Kielbas,Nomad,Cranio
-Poczek_A,35,27!,19,30
-Poczek_B,11,25,6,10
-Poczek_C,29,31!,12,1
-Poczek_D,50!,27,11,14
-Poczek_E,35,27!,19,5!
-Poczek_F,11,35,6,7!
-Poczek_G,69,72,87,61
-Poczek_H,50,27!,11,14
+Viteck,Kielbas,Nomad
+Poczek_A,145,331,456
+Poczek_B,282!,497,65
+Poczek_C,170,492!,140
+Poczek_D,205!,269!,253!
+Poczek_E,22!,480!,294
+Poczek_F,319,165,468

@@ -1,225 +1,247 @@
 import csv
-from prettytable import PrettyTable
+from prettytable import PrettyTable, FRAME, ALL
 from colorama import init, Fore, Style
 
 init(autoreset=True)
 
-TOLERANCJA = 5
-MAX_TRENEROW = 10
-MIN_TRENEROW = 2
+TOLERANCE = 5
+MAX_TRAINERS = 10
+MIN_TRAINERS = 2
 
-def parse_liczby_wzbronione(raw_values):
-    liczby = []
-    zabronione = []
+global_balance = []
+compensations = []
+total_given = []
+total_received = []
+ban_matrix = []
+balance_table = None
+balance_csv_rows = []
+pokemon_balance_table = PrettyTable()
+pokemon_balance_table.hrules = ALL
+
+# -------------------- PARSING & VALIDATION --------------------
+
+def parse_numbers_and_bans(raw_values):
+    numbers = []
+    bans = []
     for val in raw_values:
         val = val.strip()
         if val.endswith("!"):
             val = val[:-1]
-            zakaz = True
+            banned = True
         else:
-            zakaz = False
+            banned = False
         if not val.isdigit():
-            raise ValueError("Niepoprawna wartość: " + val)
-        liczba = int(val)
-        if liczba < 0:
-            raise ValueError("Liczba nie może być ujemna: " + str(liczba))
-        liczby.append(liczba)
-        zabronione.append(zakaz)
-    return liczby, zabronione
+            raise ValueError("Invalid value: " + val)
+        number = int(val)
+        if number < 0:
+            raise ValueError("Value cannot be negative: " + str(number))
+        numbers.append(number)
+        bans.append(banned)
+    return numbers, bans
 
-def waliduj_dane(trenerzy, dane):
-    if len(trenerzy) < MIN_TRENEROW or len(trenerzy) > MAX_TRENEROW:
-        raise ValueError(f"Liczba trenerów musi być między {MIN_TRENEROW} a {MAX_TRENEROW}.")
-    for linia in dane:
-        if len(linia) - 1 != len(trenerzy):
-            raise ValueError(f"Zła liczba pól w linii: {linia}")
-        for val in linia[1:]:
+def validate_data(trainers, data):
+    if len(trainers) < MIN_TRAINERS or len(trainers) > MAX_TRAINERS:
+        raise ValueError(f"Number of trainers must be between {MIN_TRAINERS} and {MAX_TRAINERS}.")
+    for line in data:
+        if len(line) - 1 != len(trainers):
+            raise ValueError(f"Incorrect number of fields in line: {line}")
+        for val in line[1:]:
             if val.endswith("!"):
                 val = val[:-1]
             if not val.strip().isdigit():
-                raise ValueError(f"Niepoprawna liczba: {val}")
+                raise ValueError(f"Invalid number: {val}")
 
-def zbilansowana_macierz(trenerzy, liczby, zakazy):
-    n = len(trenerzy)
-    total = sum(liczby)
-    target = total / n
+# -------------------- COMPENSATION --------------------
 
-    macierz = [[0 for _ in range(n)] for _ in range(n)]
-    supply = liczby[:]
-    demand = [target] * n
+def compensate_with_balance(trainers):
+    global compensations, total_given, total_received
+    n = len(trainers)
+    compensations = [[0 for _ in range(n)] for _ in range(n)]
+    total_given = [0] * n
+    total_received = [0] * n
 
-    # Oznacz ile każdy już otrzymał
-    received = [0] * n
+    for given, received in global_balance:
+        for i in range(n):
+            total_given[i] += given[i]
+            total_received[i] += received[i]
 
-    while sum(supply) > 0:
+    balance = [total_received[i] - total_given[i] for i in range(n)]
+
+    while True:
+        surplus = [(i, s) for i, s in enumerate(balance) if s > 0]
+        deficit = [(i, -s) for i, s in enumerate(balance) if s < 0]
+        if not surplus or not deficit:
+            break
+
+        for i, amount in surplus:
+            if amount <= 0:
+                continue
+            total_deficit = sum([x[1] for x in deficit])
+            for j, need in deficit:
+                if amount <= 0:
+                    break
+                ratio = need / total_deficit
+                transfer = min(amount, round(ratio * amount))
+                compensations[i][j] += transfer
+                balance[i] -= transfer
+                balance[j] += transfer
+                amount -= transfer
+
+# -------------------- DISTRIBUTION ALGORITHM --------------------
+
+def balanced_matrix(trainers, numbers, bans, pokemon_name):
+    global balance_table, balance_csv_rows, pokemon_balance_table
+    n = len(trainers)
+    total = sum(numbers)
+
+    eligible_receivers = [not bans[i] for i in range(n)]
+    receivers_count = sum(eligible_receivers)
+    demand = [0] * n
+    if receivers_count > 0:
+        base = total // receivers_count
+        extra = total % receivers_count
+        for i in range(n):
+            if eligible_receivers[i]:
+                demand[i] = base + (1 if extra > 0 else 0)
+                extra -= 1
+
+    supply = numbers[:]
+    matrix = [[0 for _ in range(n)] for _ in range(n)]
+
+    iteration = 0
+    max_iterations = 2000
+
+    while sum(supply) > 0 and iteration < max_iterations:
+        iteration += 1
         moved = False
         for i in range(n):
             if supply[i] <= 0:
                 continue
-            # Poszukaj odbiorcy z największym deficytem
-            najlepszy_j = None
-            max_diff = -1
+            needs = []
+            total_receivers = sum(1 for j in range(n) if not bans[j] and j != i)
             for j in range(n):
-                if i == j or zakazy[j]:
+                if i == j or bans[j]:
                     continue
-                diff = demand[j] - received[j]
-                if diff > max_diff:
-                    max_diff = diff
-                    najlepszy_j = j
-            if najlepszy_j is not None and max_diff > 0:
-                macierz[i][najlepszy_j] += 1
+                current = sum(matrix[k][j] for k in range(n))
+                if total_receivers == 1:
+                    needs.append((j, 99999))  # no limit if only one can receive
+                elif current < demand[j]:
+                    needs.append((j, demand[j] - current))
+
+            if not needs:
+                continue
+            needs.sort(key=lambda x: -x[1])
+            for j, _ in needs:
+                matrix[i][j] += 1
                 supply[i] -= 1
-                received[najlepszy_j] += 1
                 moved = True
+                break
         if not moved:
             break
 
-    # Wyrównanie niedoborów innymi poczkami (globalna kompensacja)
-    remaining = sum(supply)
-    i = 0
-    while remaining > 0:
-        if supply[i] > 0:
-            for j in range(n):
-                if i != j and not zakazy[j]:
-                    macierz[i][j] += 1
-                    supply[i] -= 1
-                    received[j] += 1
-                    remaining -= 1
-                    break
-        i = (i + 1) % n
+    given = [sum(matrix[i]) for i in range(n)]
+    received = [sum(matrix[j][i] for j in range(n)) for i in range(n)]
 
-    return macierz
+    global_balance.append((given[:], received[:]))  # ensure copies are stored
+    ban_matrix.append(bans)
 
+    if balance_table is None:
+        balance_columns = ["Pokemon"]
+        for t in trainers:
+            balance_columns.append(f"{t} gave")
+            balance_columns.append(f"{t} received")
+        balance_table = PrettyTable(balance_columns)
+        balance_table.hrules = FRAME
+        balance_csv_rows.append(balance_columns)
+        pokemon_balance_table.field_names = balance_columns
 
-def wypisz_wymiany(trenerzy, macierz, pokemon, tabela, suma_wymian):
-    n = len(trenerzy)
+    row_txt = [pokemon_name]
+    row_csv = [pokemon_name]
+    for i in range(n):
+        diff = abs(received[i] - given[i])
+        blue = Fore.BLUE if received[i] == 0 and bans[i] else ""
+        color = ""
+        if not blue:
+            color = Fore.RED if diff > TOLERANCE else ""
+        row_txt.append(f"{color}{given[i]}{Style.RESET_ALL}")
+        row_txt.append(f"{blue}{received[i]}{Style.RESET_ALL}")
+        row_csv.append(given[i])
+        row_csv.append(received[i])
+
+    balance_table.add_row(row_txt)
+    pokemon_balance_table.add_row(row_txt)
+    balance_csv_rows.append(row_csv)
+
+    return matrix
+
+# -------------------- DISPLAY & EXPORT --------------------
+
+def print_final_summary(trainers):
+    n = len(trainers)
+    sum_given = [sum(given[i] for given, _ in global_balance) for i in range(n)]
+    sum_received = [sum(received[i] for _, received in global_balance) for i in range(n)]
+
+    total_row = ["TOTAL"]
+    for i in range(n):
+        total_row.append(sum_given[i])
+        total_row.append(sum_received[i])
+
+    pokemon_balance_table.add_row(total_row)
+    balance_csv_rows.append(["TOTAL"] + sum_given + sum_received)
+
+    with open("pokemon_balance.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(pokemon_balance_table.field_names)
+        for row in pokemon_balance_table._rows:
+            writer.writerow([str(cell) for cell in row])
+
+def show_all(trainers, trade_table):
+    print("\n1. TRADE MATRIX:")
+    print(trade_table)
+    print("\n2. POKÉMON BALANCE:")
+    print(pokemon_balance_table)
+    print("Made by ChatGPT and Viteckpl - what a cooperation!")
+
+# -------------------- MAIN --------------------
+
+with open("poczki.txt", "r", encoding="utf-8") as f:
+    trainers = f.readline().strip().split(",")
+    raw_data = [line.strip().split(",") for line in f if line.strip() != ""]
+
+try:
+    validate_data(trainers, raw_data)
+except Exception as e:
+    print("❌ ERROR IN POCZKI.TXT:", e)
+    exit(1)
+
+n = len(trainers)
+column_headers = ["Pokemon"]
+pairs = []
+for i in range(n):
+    for j in range(n):
+        if i != j:
+            column_headers.append(f"{trainers[i]} → {trainers[j]}")
+            pairs.append(f"{trainers[i]} → {trainers[j]}")
+
+trade_table = PrettyTable(column_headers)
+total_trades = {p: 0 for p in pairs}
+
+for line in raw_data:
+    pokemon = line[0]
+    numbers, bans = parse_numbers_and_bans(line[1:])
+    matrix = balanced_matrix(trainers, numbers, bans, pokemon)
     row = [pokemon]
     for i in range(n):
         for j in range(n):
             if i != j:
-                row.append(macierz[i][j])
-                para = f"{trenerzy[i]} → {trenerzy[j]}"
-                suma_wymian[para] += macierz[i][j]
-    tabela.add_row(row, divider=True)
+                row.append(matrix[i][j])
+                pair = f"{trainers[i]} → {trainers[j]}"
+                total_trades[pair] += matrix[i][j]
+    trade_table.add_row(row, divider=True)
 
-def wypisz_bilans(trenerzy, macierz, liczby, zakazy, pokemon, bilans_txt, bilans_csv, sumy_globalne=None):
-    n = len(trenerzy)
-    otrzymane = [sum(macierz[j][i] for j in range(n)) for i in range(n)]
-    oddane = [sum(macierz[i][j] for j in range(n)) for i in range(n)]
+summary_row = ["TOTAL"] + [total_trades[p] for p in pairs]
+trade_table.add_row(summary_row)
 
-    row_txt = [pokemon]
-    row_csv = [pokemon]
-
-    for i in range(n):
-        roznica = abs(otrzymane[i] - oddane[i])
-        niebieski = Fore.BLUE if otrzymane[i] == 0 and zakazy[i] else ""
-        kolor = ""
-        if niebieski == "":
-            kolor = Fore.RED if roznica > TOLERANCJA else ""
-
-        row_txt.append(f"{kolor}{oddane[i]:>5}{Style.RESET_ALL}")
-        row_txt.append(f"{niebieski}{otrzymane[i]:>5}{Style.RESET_ALL}")
-        row_csv.append(oddane[i])
-        row_csv.append(otrzymane[i])
-
-        if sumy_globalne is not None:
-            sumy_globalne["oddane"][i] += oddane[i]
-            sumy_globalne["otrzymane"][i] += otrzymane[i]
-
-    bilans_txt.add_row(row_txt)
-    bilans_csv.append(row_csv)
-
-def wypisz_sume_globalna(trenerzy, bilans_txt, bilans_csv, sumy_globalne):
-    row_txt = ["TOTAL"]
-    row_csv = ["TOTAL"]
-    for i in range(len(trenerzy)):
-        row_txt.append(f"{sumy_globalne['oddane'][i]:>5}")
-        row_txt.append(f"{sumy_globalne['otrzymane'][i]:>5}")
-        row_csv.append(sumy_globalne['oddane'][i])
-        row_csv.append(sumy_globalne['otrzymane'][i])
-    bilans_txt.add_row(row_txt)
-    bilans_csv.append(row_csv)
-
-def wypisz_saldo(trenerzy, sumy_globalne):
-    saldo = [sumy_globalne["otrzymane"][i] - sumy_globalne["oddane"][i] for i in range(len(trenerzy))]
-    with open("saldo_debug.txt", "w", encoding="utf-8") as f:
-        print("\n🔍 SALDO KOŃCOWE:")
-        f.write("Saldo końcowe (otrzymane - oddane):\n")
-        for i, t in enumerate(trenerzy):
-            info = f"{t}: {saldo[i]}"
-            print(info)
-            f.write(info + "\n")
-
-log_nieudanych = []
-
-with open("poczki.txt", "r", encoding="utf-8") as f:
-    trenerzy = f.readline().strip().split(",")
-    dane = [line.strip().split(",") for line in f if line.strip() != ""]
-
-try:
-    waliduj_dane(trenerzy, dane)
-except Exception as e:
-    print("BŁĄD W PLIKU POCZKI.TXT:", e)
-    exit(1)
-
-n = len(trenerzy)
-kolumny_wymian = ["Pokemon"]
-pary = []
-for i in range(n):
-    for j in range(n):
-        if i != j:
-            kolumny_wymian.append(f"{trenerzy[i]} → {trenerzy[j]}")
-            pary.append(f"{trenerzy[i]} → {trenerzy[j]}")
-
-tabela_wymian = PrettyTable(kolumny_wymian)
-suma_wymian = {p: 0 for p in pary}
-
-kolumny_bilans = ["Pokemon"]
-for t in trenerzy:
-    kolumny_bilans.append(f"{t} oddał")
-    kolumny_bilans.append(f"{t} dostał")
-
-tabela_bilans = PrettyTable(kolumny_bilans)
-bilans_csv_rows = [kolumny_bilans]
-sumy_globalne = {"oddane": [0] * n, "otrzymane": [0] * n}
-
-for line in dane:
-    pokemon = line[0]
-    liczby, zakazy = parse_liczby_wzbronione(line[1:])
-    macierz = zbilansowana_macierz(trenerzy, liczby, zakazy)
-    wypisz_wymiany(trenerzy, macierz, pokemon, tabela_wymian, suma_wymian)
-    wypisz_bilans(trenerzy, macierz, liczby, zakazy, pokemon, tabela_bilans, bilans_csv_rows, sumy_globalne=sumy_globalne)
-
-suma_row = ["RAZEM"] + [suma_wymian[p] for p in pary]
-tabela_wymian.add_row(suma_row)
-wypisz_sume_globalna(trenerzy, tabela_bilans, bilans_csv_rows, sumy_globalne)
-wypisz_saldo(trenerzy, sumy_globalne)
-
-print(tabela_wymian)
-print(tabela_bilans)
-
-with open("wynik.txt", "w", encoding="utf-8") as f:
-    f.write(str(tabela_wymian))
-
-with open("bilans.txt", "w", encoding="utf-8") as f:
-    f.write(str(tabela_bilans))
-
-with open("wynik.csv", "w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    writer.writerow(kolumny_wymian)
-    for row in tabela_wymian._rows:
-        writer.writerow(row)
-
-with open("bilans.csv", "w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    writer.writerows(bilans_csv_rows)
-
-if log_nieudanych:
-    print("\n🛑 Problemy z rozdzieleniem niektórych poczków:")
-    for log in log_nieudanych:
-        print(log)
-    with open("problemy.txt", "w", encoding="utf-8") as f:
-        for log in log_nieudanych:
-            f.write(log + "\n")
-else:
-    print("\n✅ Wszystkie poczki udało się przydzielić i zbilansować.")
+compensate_with_balance(trainers)
+print_final_summary(trainers)
+show_all(trainers, trade_table)
