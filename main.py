@@ -161,8 +161,8 @@ def balanced_matrix(trainers, numbers, bans, pokemon_name):
         diff = abs(received[i] - given[i])
         blue = Fore.BLUE if received[i] == 0 and bans[i] else ""
         color = ""
-        if not blue:
-            color = Fore.RED if diff > TOLERANCE else ""
+        #if not blue:
+            #color = Fore.RED if diff > TOLERANCE else ""
         row_txt.append(f"{color}{given[i]}{Style.RESET_ALL}")
         row_txt.append(f"{blue}{received[i]}{Style.RESET_ALL}")
         row_csv.append(given[i])
